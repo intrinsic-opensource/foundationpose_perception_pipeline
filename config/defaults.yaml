@@ -17,6 +17,26 @@
 # profile they were taken on, where their scope is unambiguous. What stays here is the part that
 # transfers: what each parameter trades, and how to re-sweep it.
 
+# ONNX files live here; generated TensorRT plans live in engine_cache/ underneath.
+# Relative to this YAML file. Profile overrides are relative to the profile file.
+models_dir: ../../models
+
+resolution:
+  stereo:
+    # 800 px is the rectified width the model sees; it does not change the output resolution,
+    # which is always the full base-camera size.
+    max_width: 800
+    # Fixed height when using static-height stereo models, or null for dynamic height.
+    fixed_height: null
+  sam3:
+    # SAM3 text and image vision encoder input resolution (1008x1008).
+    image_size: 1008
+  foundationpose:
+    # Optional input bounds and fixed crop size (160x160) for refine and score networks.
+    max_image_width: null
+    max_image_height: null
+    crop_size: 160
+
 detection:
   # SAM3 confidence threshold applied to proposals before matching.
   # CONVENTIONAL, not measured: a deliberately permissive floor, because the rerank stage below is

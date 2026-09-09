@@ -81,22 +81,23 @@ or from PyTorch's own index. They are not redistributed with this code.
 | einops | MIT | Alex Rogozhnikov | <https://github.com/arogozhnikov/einops> |
 | pycocotools | BSD-2-Clause | Piotr Dollar and Tsung-Yi Lin | <https://github.com/ppwwyyxx/cocoapi> |
 | psutil | BSD-3-Clause | Giampaolo Rodola; Jay Loden; Dave Daeschler | <https://github.com/giampaolo/psutil> |
-| omegaconf | BSD-3-Clause | Omry Yadan | <https://github.com/omry/omegaconf> |
-| matplotlib | Matplotlib License (PSF-derived) | Matplotlib Development Team; John D. Hunter | <https://github.com/matplotlib/matplotlib> |
+| onnx | [Apache-2.0](https://github.com/onnx/onnx/blob/main/LICENSE) | ONNX contributors | <https://github.com/onnx/onnx> |
+| regex | [Apache-2.0 additions; inherited Python license terms](https://github.com/mrabarnett/mrab-regex/blob/hg/LICENSE.txt) | regex contributors; inherited CPython/Secret Labs notices | <https://github.com/mrabarnett/mrab-regex> |
 | setuptools | MIT | Jason R. Coombs and the Setuptools contributors | <https://github.com/pypa/setuptools> |
 
 ---
 
 ## 3. Optional and separately installed dependencies
 
-Not installed by a default `uv sync`. See [README.md](README.md) for how each is obtained.
+Not installed by a default `uv sync`. TensorRT, CUDA runtime and CUDA bindings are installed
+with the `foundationpose` extra and serve the native stereo/SAM3 adapters as well as the SDK.
+See [README.md](README.md) for installation.
 
 | Component | License | Project |
 |---|---|---|
 | markdown | BSD-3-Clause | <https://github.com/Python-Markdown/markdown> |
 | ruff | MIT | <https://github.com/astral-sh/ruff> |
-| pycuda | MIT | <https://github.com/inducer/pycuda> |
-| nvidia-tao-deploy | Apache-2.0 | <https://github.com/NVIDIA-TAO/tao-deploy> |
+| cuda-bindings | License terms supplied with the installed NVIDIA CUDA Python distribution | <https://github.com/NVIDIA/cuda-python> |
 | tensorrt-cu13 | NVIDIA TensorRT license terms, supplied with the package | <https://developer.nvidia.com/tensorrt> |
 | nvidia-cuda-runtime | NVIDIA CUDA Toolkit EULA | <https://docs.nvidia.com/cuda/eula/> |
 
@@ -113,7 +114,10 @@ Apache-2.0 license. Code and weights are licensed separately for every one of th
 | SAM3 | `LicenseRef-Meta-SAM` (Meta's SAM License, not OSI-approved) | same license; the checkpoint is gated — request access at <https://huggingface.co/facebook/sam3> |
 | FoundationStereo (TAO `deployable_*`) | executed as a TensorRT engine; no source is imported | separate NGC artifact — the [model page](https://catalog.ngc.nvidia.com/orgs/nvidia/tao/models/foundationstereo)'s terms |
 
-Section 8 of [README.md](README.md) covers this category in full.
+SAM3 source/checkpoint access is needed for ONNX export; runtime uses the exported graphs or
+TensorRT plans and copied vocabulary. Local tokenizer behavior follows upstream SAM3, including
+its BPE vocabulary and cleaning/splitting conventions. Exporting or compiling model artifacts
+does not replace their upstream terms. Section 8 of [README.md](README.md) covers these artifacts.
 
 Use of this pipeline may rely on third party components or models that you must download
 separately. Those components or models are subject to the applicable open source licenses or other
@@ -127,5 +131,5 @@ rights.
 - This file lists only **direct** dependencies. Transitive dependencies installed by `pip`/`uv`
   carry their own license metadata in their respective distributions and are not re-listed here.
 - Several components bundle third-party code inside their own distributions — `torch`, `scipy`,
-  `matplotlib` and `opencv-python` among them. Consult each project's own notice files for the
+  and `opencv-python` among them. Consult each project's own notice files for the
   components it embeds.

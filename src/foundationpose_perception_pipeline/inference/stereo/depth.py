@@ -15,7 +15,7 @@
 The result is aligned with `rgb/<base>.png`, so it lines up with what SAM3 segments and can be
 handed straight to FoundationPose.
 
-This is the commercial path: a TAO Deploy engine, in the pipeline's own environment, called as a
+This is the commercial path: a TensorRT engine, in the pipeline's own environment, called as a
 function. See `stereo/rectify.py` for the invariants the geometry has to hold to.
 
 Runnable as a module for one-scene debugging, and as an escape hatch if the in-process CUDA
@@ -38,14 +38,64 @@ import cv2
 import numpy as np
 
 from foundationpose_perception_pipeline.inference.stereo.rectify import rectify_pair, select_partner_camera
-from foundationpose_perception_pipeline.inference.stereo.tao import (
-    StereoEngine,
-    disparity_to_depth_m,
-    fit_to_model,
+from foundationpose_perception_pipeline.inference.stereo.trt_processor import (
+    FoundationStereoTrtProcessor as StereoEngine,
+)
+from foundationpose_perception_pipeline.inference.stereo.trt_processor import (
     load_engine,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FittedPair:
+    """A rectified pair prepared for a static engine, and how to undo that preparation."""
+
+    left: np.ndarray
+    right: np.ndarray
+    width_scale: float
+    content_height: int
+
+
+def fit_to_model(engine: Any, left_rgb: np.ndarray, right_rgb: np.ndarray) -> FittedPair:
+    """Prepare a rectified pair for a static engine: scale by width, then pad the height."""
+    if getattr(engine, "fixed_hw", None) is None:
+        return FittedPair(left_rgb, right_rgb, 1.0, left_rgb.shape[0])
+
+    model_h, model_w = engine.fixed_hw
+    src_h, src_w = left_rgb.shape[:2]
+    if (src_h, src_w) == (model_h, model_w):
+        return FittedPair(left_rgb, right_rgb, 1.0, model_h)
+
+    width_scale = model_w / src_w
+    scaled_h = round(src_h * width_scale)
+    interpolation = cv2.INTER_AREA if width_scale < 1.0 else cv2.INTER_LINEAR
+    left = cv2.resize(left_rgb, (model_w, scaled_h), interpolation=interpolation)
+    right = cv2.resize(right_rgb, (model_w, scaled_h), interpolation=interpolation)
+
+    if scaled_h == model_h:
+        return FittedPair(left, right, width_scale, model_h)
+    if scaled_h < model_h:
+        pad = model_h - scaled_h
+        left = cv2.copyMakeBorder(left, 0, pad, 0, 0, cv2.BORDER_REPLICATE)
+        right = cv2.copyMakeBorder(right, 0, pad, 0, 0, cv2.BORDER_REPLICATE)
+        return FittedPair(left, right, width_scale, scaled_h)
+
+    raise ValueError(
+        f"Rectified pair scales to {model_w}x{scaled_h}, exceeding engine height {model_h}; "
+        "rebuild with tools/build_stereo_engine.py --shape-from-scene"
+    )
+
+
+def disparity_to_depth_m(
+    disparity_px: np.ndarray, focal_px: float, baseline_m: float, min_disparity: float = 1e-3
+) -> np.ndarray:
+    """Convert rectified disparity to metric depth: Z = f * B / d."""
+    depth = np.full(disparity_px.shape, np.nan, dtype=np.float32)
+    valid = np.isfinite(disparity_px) & (disparity_px > min_disparity)
+    depth[valid] = (focal_px * baseline_m / disparity_px[valid]).astype(np.float32)
+    return depth
 
 MM_PER_M = 1000.0
 
@@ -444,7 +494,7 @@ def scene_depth(
     # biased too far and looks entirely plausible. Measured at model scale, with the pre-shift
     # removed, because that is the space the search range lives in.
     saturation = saturated_fraction(
-        (disparity - pre_shift) * (fitted.left.shape[1] / float(rect_left.shape[1]))
+        disparity * fitted.width_scale - pre_shift
     )
     if saturation > 0.001:
         logger.warning(
@@ -469,7 +519,7 @@ def scene_depth(
         "model": str(engine.engine_path),
         "providers": ["TensorRT"],
         "model_fixed_hw": list(engine.fixed_hw) if engine.fixed_hw else None,
-        "backend": "tao",
+        "backend": "tensorrt",
         "normalization": "imagenet",
         "rectified_size_wh": [int(rect_left.shape[1]), int(rect_left.shape[0])],
         "baseline_m": baseline_m,
@@ -541,10 +591,12 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scene-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--engine", type=Path, required=True, help="TensorRT engine from tools/build_tao_engine.py")
+    parser.add_argument("--engine", type=Path, default=None,
+                        help="ONNX or TensorRT plan; defaults to the stereo model under MODELS_DIR.")
     parser.add_argument("--base-camera", type=int, default=0)
     parser.add_argument("--partner-camera", type=int, default=None, help="Override pair selection.")
     parser.add_argument("--max-width", type=int, default=DEFAULT_MAX_WIDTH)
+    parser.add_argument("--fixed-height", type=int, default=None)
     parser.add_argument("--min-working-distance", type=float, default=None)
     parser.add_argument("--max-working-distance", type=float, default=None)
     parser.add_argument("--clahe-clip-limit", type=float, default=None)
@@ -556,7 +608,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     result = scene_depth(
         args.scene_dir,
-        engine=load_engine(str(Path(args.engine).expanduser().resolve())),
+        engine=load_engine(args.engine, max_width=args.max_width, fixed_height=args.fixed_height),
         base_camera=args.base_camera,
         partner_camera=args.partner_camera,
         max_width=args.max_width,

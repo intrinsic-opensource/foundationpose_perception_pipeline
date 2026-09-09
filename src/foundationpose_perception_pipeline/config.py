@@ -75,6 +75,25 @@ def foundationpose_root_missing_message() -> str:
     )
 
 
+def models_dir_default() -> Path:
+    """Resolve the model directory without requiring a dataset for standalone tools."""
+    config, dataset = preparse_config(), preparse_dataset()
+    if config or dataset or os.environ.get(CONFIG_ENV_VAR) or len(available_profiles()) == 1:
+        return settings_from_argv().models_dir
+    return _models_dir(_read_yaml(DEFAULTS_PATH), {}, DEFAULTS_PATH)
+
+
+def _models_dir(defaults: dict, overrides: dict, profile_path: Path) -> Path:
+    value = os.environ.get("MODELS_DIR")
+    if value:
+        return Path(value).expanduser().resolve()
+    value = overrides.get("models_dir", defaults["models_dir"])
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{profile_path}: models_dir must be a non-empty path")
+    base = profile_path.parent if "models_dir" in overrides else DEFAULTS_PATH.parent
+    return _resolve_path(value, base)
+
+
 def help_requested(argv: list[str] | None = None) -> bool:
     """Whether this invocation is asking for ``--help`` rather than asking to run.
 
@@ -217,11 +236,10 @@ class DepthSettings:
     """
 
     engine: Path | None
-    """TensorRT engine the depth stage runs, through TAO Deploy, in this process.
+    """TensorRT engine the depth stage runs, through TensorRT, in this process.
 
-    None means no engine is configured, and every run then needs `--foundation-stereo-model`.
-    Build one with `tools/build_tao_engine.py`; an engine is machine-specific, which is why this
-    is a path in a profile rather than a name.
+    Accepts an ONNX source (compiled on demand) or a precompiled engine path.
+    None uses the conventional stereo model under MODELS_DIR, with plans in engine_cache/.
     """
 
 
@@ -232,6 +250,44 @@ class ValidationSettings:
     tolerance_mm: float
     min_within_5mm: float
     cutoffs: list[float]
+
+
+DEFAULT_FS_MAX_WIDTH_FALLBACK: int = 800
+DEFAULT_SAM3_RESOLUTION: int = 1008
+DEFAULT_FOUNDATIONPOSE_CROP: int = 160
+
+
+@dataclass(frozen=True)
+class StereoResolutionSettings:
+    """Resolution settings for FoundationStereo."""
+
+    max_width: int = DEFAULT_FS_MAX_WIDTH_FALLBACK
+    fixed_height: int | None = None
+
+
+@dataclass(frozen=True)
+class Sam3ResolutionSettings:
+    """Resolution settings for SAM3."""
+
+    image_size: int = DEFAULT_SAM3_RESOLUTION
+
+
+@dataclass(frozen=True)
+class FoundationPoseResolutionSettings:
+    """Resolution settings for FoundationPose."""
+
+    max_image_width: int | None = None
+    max_image_height: int | None = None
+    crop_size: int = DEFAULT_FOUNDATIONPOSE_CROP
+
+
+@dataclass(frozen=True)
+class ResolutionSettings:
+    """Centralized resolution settings across the perception pipeline."""
+
+    stereo: StereoResolutionSettings
+    sam3: Sam3ResolutionSettings
+    foundationpose: FoundationPoseResolutionSettings
 
 
 @dataclass(frozen=True)
@@ -246,6 +302,8 @@ class Settings:
     ground_truth: GroundTruthSettings
     depth: DepthSettings
     validation: ValidationSettings
+    resolution: ResolutionSettings
+    models_dir: Path
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -368,8 +426,15 @@ def _reject_unknown_overrides(overrides: dict[str, Any], defaults: dict[str, Any
             )
         if not isinstance(values, dict) or not isinstance(defaults[section], dict):
             continue
-        for key in values:
+        for key, val in values.items():
             if key in defaults[section]:
+                if isinstance(val, dict) and isinstance(defaults[section][key], dict):
+                    for subkey in val:
+                        if subkey not in defaults[section][key]:
+                            raise ConfigError(
+                                f"{profile_path}: `overrides: {section}: {key}:` has no key {subkey!r}. "
+                                f"Keys of {section}.{key}: {', '.join(sorted(defaults[section][key]))}."
+                            )
                 continue
             elsewhere = sorted(
                 other for other, block in defaults.items()
@@ -388,7 +453,7 @@ def _algorithm_settings(
     merged: dict[str, Any], profile_dir: Path, profile_path: Path
 ) -> tuple[
     DetectionSettings, RerankSettings, RefinementSettings, PoseSettings,
-    GroundTruthSettings, DepthSettings, ValidationSettings,
+    GroundTruthSettings, DepthSettings, ValidationSettings, ResolutionSettings,
 ]:
     """Build every non-dataset settings section from an already-merged mapping.
 
@@ -448,6 +513,34 @@ def _algorithm_settings(
             min_within_5mm=float(merged["validation"]["min_within_5mm"]),
             cutoffs=[float(v) for v in merged["validation"]["cutoffs"]],
         )
+        res_dict = merged.get("resolution", {})
+        stereo_res = res_dict.get("stereo", {}) if isinstance(res_dict.get("stereo"), dict) else {}
+        stereo_max_width = int(
+            stereo_res.get(
+                "max_width",
+                merged.get("depth", {}).get("foundation_stereo_max_width", DEFAULT_FS_MAX_WIDTH_FALLBACK),
+            )
+        )
+        stereo_fixed_height = (
+            int(stereo_res["fixed_height"]) if stereo_res.get("fixed_height") is not None else None
+        )
+        sam3_res = res_dict.get("sam3", {}) if isinstance(res_dict.get("sam3"), dict) else {}
+        sam3_image_size = int(sam3_res.get("image_size", DEFAULT_SAM3_RESOLUTION))
+
+        fp_res = res_dict.get("foundationpose", {}) if isinstance(res_dict.get("foundationpose"), dict) else {}
+        fp_max_width = int(fp_res["max_image_width"]) if fp_res.get("max_image_width") is not None else None
+        fp_max_height = int(fp_res["max_image_height"]) if fp_res.get("max_image_height") is not None else None
+        fp_crop_size = int(fp_res.get("crop_size", DEFAULT_FOUNDATIONPOSE_CROP))
+
+        resolution = ResolutionSettings(
+            stereo=StereoResolutionSettings(max_width=stereo_max_width, fixed_height=stereo_fixed_height),
+            sam3=Sam3ResolutionSettings(image_size=sam3_image_size),
+            foundationpose=FoundationPoseResolutionSettings(
+                max_image_width=fp_max_width,
+                max_image_height=fp_max_height,
+                crop_size=fp_crop_size,
+            ),
+        )
     except KeyError as exc:
         raise ConfigError(
             f"Missing key {exc} after merging {DEFAULTS_PATH} with the overrides in {profile_path}"
@@ -455,7 +548,7 @@ def _algorithm_settings(
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"Bad value in {DEFAULTS_PATH} or {profile_path}: {exc}") from exc
 
-    return detection, rerank, refinement, pose, ground_truth, depth, validation
+    return detection, rerank, refinement, pose, ground_truth, depth, validation, resolution
 
 
 @cache
@@ -498,11 +591,12 @@ def load_settings(config: str | Path | None = None, dataset: str | None = None) 
         regression=dict(profile.get("regression") or {}),
     )
 
-    detection, rerank, refinement, pose, ground_truth, depth, validation = _algorithm_settings(
+    detection, rerank, refinement, pose, ground_truth, depth, validation, resolution = _algorithm_settings(
         merged, profile_dir, profile_path
     )
     return Settings(
         dataset=dataset_profile,
+        models_dir=_models_dir(defaults, overrides, profile_path),
         detection=detection,
         rerank=rerank,
         refinement=refinement,
@@ -510,6 +604,7 @@ def load_settings(config: str | Path | None = None, dataset: str | None = None) 
         ground_truth=ground_truth,
         depth=depth,
         validation=validation,
+        resolution=resolution,
     )
 
 
@@ -526,7 +621,7 @@ def defaults_only_settings() -> Settings:
     needs real dataset paths resolves a profile properly and fails loudly when it cannot.
     """
     defaults = _read_yaml(DEFAULTS_PATH)
-    detection, rerank, refinement, pose, ground_truth, depth, validation = _algorithm_settings(
+    detection, rerank, refinement, pose, ground_truth, depth, validation, resolution = _algorithm_settings(
         defaults, CONFIG_DIR, DEFAULTS_PATH
     )
     return Settings(
@@ -543,6 +638,7 @@ def defaults_only_settings() -> Settings:
             output_root=CONFIG_DIR / "../output",
             batch_subdir="batch_run",
         ),
+        models_dir=_models_dir(defaults, {}, DEFAULTS_PATH),
         detection=detection,
         rerank=rerank,
         refinement=refinement,
@@ -550,6 +646,7 @@ def defaults_only_settings() -> Settings:
         ground_truth=ground_truth,
         depth=depth,
         validation=validation,
+        resolution=resolution,
     )
 
 
@@ -728,6 +825,15 @@ DEFAULT_MIN_VISIBLE_FRACTION = float(_DEFAULTS["ground_truth"]["min_visible_frac
 GT_RASTERIZER_NEAR_MM = float(_DEFAULTS["ground_truth"]["rasterizer_near_mm"])
 
 DEFAULT_FS_MAX_WIDTH = int(_DEFAULTS["depth"]["foundation_stereo_max_width"])
+DEFAULT_STEREO_MAX_WIDTH = int(
+    _DEFAULTS.get("resolution", {}).get("stereo", {}).get("max_width", DEFAULT_FS_MAX_WIDTH)
+)
+DEFAULT_SAM3_IMAGE_SIZE = int(
+    _DEFAULTS.get("resolution", {}).get("sam3", {}).get("image_size", DEFAULT_SAM3_RESOLUTION)
+)
+DEFAULT_FP_CROP_SIZE = int(
+    _DEFAULTS.get("resolution", {}).get("foundationpose", {}).get("crop_size", DEFAULT_FOUNDATIONPOSE_CROP)
+)
 
 DEFAULT_TOLERANCE_MM = float(_DEFAULTS["validation"]["tolerance_mm"])
 DEFAULT_MIN_WITHIN_5MM = float(_DEFAULTS["validation"]["min_within_5mm"])

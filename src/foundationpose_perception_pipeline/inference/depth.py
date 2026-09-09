@@ -8,7 +8,7 @@ FoundationPose consumes. Scoring it against a collected ground-truth map is a se
 activity that lives in `evaluation/`.
 
 **One backend ships, and it is a registry entry like any other.** `commercial` runs a TAO
-`deployable_*` export as a TensorRT engine through TAO Deploy, in this environment and this
+`deployable_*` export as a TensorRT engine through TensorRT, in this environment and this
 process -- see `foundationpose_perception_pipeline.inference.stereo`. A function call, not a process: no
 interpreter start-up, no torch import, no CUDA context creation per scene, and the depth comes
 back as arrays rather than through a `.npy` round-trip. What it does still re-pay per scene is
@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-ENGINE_SUFFIXES = (".engine", ".trt")
+ENGINE_SUFFIXES = (".engine", ".trt", ".plan", ".onnx")
 
 COMMERCIAL_BACKEND = "commercial"
 AUTO_BACKEND = "auto"
@@ -124,28 +124,8 @@ def backend_forwarded_flags(args: Any) -> dict[str, Any]:
 
 
 def is_engine(model: Path | str | None) -> bool:
-    """Whether a model path names a TensorRT engine, i.e. selects the shipped backend."""
+    """Whether a path names an ONNX source or a precompiled TensorRT engine."""
     return model is not None and Path(model).suffix.lower() in ENGINE_SUFFIXES
-
-
-def _active_profile_hint() -> str:
-    """Name the profile file this run resolved, for the "no engine" message.
-
-    Worth the lookup: "the config profile" leaves the reader to work out which file that is, and
-    the answer depends on `--config`, the environment variable and `--dataset`. Resolved the same
-    way the run did. Falls back to the generic phrase rather than raising -- this is already an
-    error path, and an error raised while building an error message helps nobody.
-    """
-    try:
-        from foundationpose_perception_pipeline.config import (
-            preparse_config,
-            preparse_dataset,
-            resolve_config_path,
-        )
-
-        return str(resolve_config_path(preparse_config(), preparse_dataset()))
-    except Exception:  # noqa: BLE001 -- failing to name the file is not worth failing over
-        return "the config profile"
 
 
 def resolve_backend(model: Path | str | None, requested: str = AUTO_BACKEND) -> str:
@@ -166,29 +146,10 @@ def resolve_backend(model: Path | str | None, requested: str = AUTO_BACKEND) -> 
     claimed = [backend.name for backend in backends.values() if backend.claims(path)]
     if not claimed:
         known = ", ".join(f"{b.name} ({b.describe})" for b in backends.values() if b.describe)
-        # Anything that is not a `.engine` gets the specific message, not the generic one. The
-        # mistake people actually make is naming the ONNX -- they fetch the export, build the
-        # engine beside it, then paste the path already in their shell history -- but a `.pth`,
-        # a directory or a typo all land here too, and "no backend handles this" tells none of
-        # them what the depth stage actually wants. Reached only when no backend claimed the
-        # path, so a registered backend that legitimately takes another suffix is unaffected.
-        if path is not None and path.suffix != ".engine":
-            engines = sorted(path.parent.glob(f"{path.stem}__*.engine")) or sorted(
-                path.parent.glob("*.engine")
-            )
-            found = f" Found in the same directory: {engines[0].name}" if engines else ""
-            raise SystemExit(
-                f"{model} is not a TensorRT engine, and no registered backend claims it. "
-                f"Registered: {known or 'none'}. Build an engine with `tools/build_tao_engine.py "
-                f"--onnx <deployable>.onnx --shape-from-scene <scene_dir>`; it writes a `.engine` "
-                f"beside the ONNX. Point --foundation-stereo-model or depth.engine at that "
-                f"file.{found}"
-            )
         raise SystemExit(
             f"No depth backend handles {model or 'an unset model'}. Registered: {known or 'none'}. "
-            f"Build an engine with `tools/build_tao_engine.py --shape-from-scene <scene_dir>`, "
-            f"then either pass it with --foundation-stereo-model or set `depth.engine` under "
-            f"`overrides: depth:` in {_active_profile_hint()}."
+            "Use an ONNX source or a precompiled .plan/.engine/.trt file via "
+            "--foundation-stereo-model or depth.engine."
         )
     if len(claimed) > 1:
         raise SystemExit(f"{model} is claimed by more than one depth backend: {', '.join(claimed)}")
@@ -243,6 +204,8 @@ def generate_with_engine(
     depth_dir: Path,
     model: Path | None,
     max_width: int,
+    fixed_height: int | None = None,
+    resolution: Any | None = None,
     base_camera: int = 0,
     min_working_distance_m: float | None = None,
     max_working_distance_m: float | None = None,
@@ -250,19 +213,27 @@ def generate_with_engine(
     clahe_detail_boost: float = 0.0,
     **_ignored: Any,
 ) -> Path:
-    """Depth for one scene, through TAO Deploy, in this process.
+    """Depth for one scene, through TensorRT, in this process.
 
-    The stereo package is imported here rather than at module scope so that `pycuda.autoinit`,
-    which takes a CUDA context merely by being imported, is never triggered until depth is
-    actually generated.
+    Imports are deferred until depth generation is requested.
     """
-    from foundationpose_perception_pipeline.inference.stereo import load_engine, scene_depth, write_scene_depth
-    from foundationpose_perception_pipeline.inference.stereo.tao import release_engines
+    from foundationpose_perception_pipeline.inference.stereo import (
+        load_engine,
+        release_engines,
+        scene_depth,
+        write_scene_depth,
+    )
 
     try:
+        model_str = str(Path(model).expanduser().resolve()) if model is not None else None
         result = scene_depth(
             scene_dir,
-            engine=load_engine(str(Path(model).expanduser().resolve())),  # type: ignore[arg-type]
+            engine=load_engine(
+                model_str,
+                max_width=max_width,
+                fixed_height=fixed_height,
+                resolution=resolution,
+            ),
             base_camera=base_camera,
             max_width=max_width,
             min_working_distance_m=min_working_distance_m,
@@ -287,7 +258,7 @@ def generate_with_engine(
 register_backend(
     DepthBackend(
         name=COMMERCIAL_BACKEND,
-        claims=is_engine,
+        claims=lambda model: model is None or is_engine(model),
         generate=generate_with_engine,
         describe="a TensorRT engine built from a TAO deployable export",
     )

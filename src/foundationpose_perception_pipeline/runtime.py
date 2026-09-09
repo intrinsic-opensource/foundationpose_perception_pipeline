@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Torch/device helpers shared by the SAM3 inference paths."""
+"""Runtime helpers for perception inference paths."""
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+from typing import Any
+
 import numpy as np
-import torch
 
 
-def tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
-    """Detach a tensor, upcast low-precision floats if needed, and move it to NumPy."""
-    if tensor.dtype in (torch.bfloat16, torch.float16):
-        tensor = tensor.float()
-    return tensor.detach().cpu().numpy()
+def tensor_to_numpy(tensor: Any) -> np.ndarray:
+    """Convert an input array/tensor to a NumPy array."""
+    if isinstance(tensor, np.ndarray):
+        return tensor
+    if hasattr(tensor, "detach"):
+        return tensor.detach().cpu().numpy()
+    return np.asarray(tensor)
 
 
-def inference_context(device: str):
-    """Choose the autocast context used during SAM3 inference on the target device."""
-    if device.startswith("cuda"):
-        return torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-    return torch.amp.autocast(device_type="cpu", enabled=False)
+def inference_context(_device: str):
+    """Context manager for TensorRT inference."""
+    return nullcontext()

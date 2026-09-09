@@ -101,7 +101,7 @@ class PoseEstimator:
         """Tear down the current FoundationPose context and reclaim its GPU memory."""
         self.pose_registry.close()
         gc.collect()
-        if self.device.startswith("cuda") and self._torch.cuda.is_available():
+        if self._torch is not None and self.device.startswith("cuda") and self._torch.cuda.is_available():
             self._torch.cuda.empty_cache()
 
     def begin_scene(self, image: Any, depth_image_size: tuple[int, int]) -> dict[str, Any]:
@@ -128,7 +128,7 @@ class PoseEstimator:
         self._active_pose_image_size = None
         self._active_target_obj_id = None
         gc.collect()
-        if self.device.startswith("cuda") and self._torch.cuda.is_available():
+        if self._torch is not None and self.device.startswith("cuda") and self._torch.cuda.is_available():
             self._torch.cuda.empty_cache()
 
     def _acquire(self, target: Any, depth_image_size: tuple[int, int]) -> Any:
