@@ -95,6 +95,7 @@ def export_component(wrapper, inputs, path, input_names, output_names, verify=Fa
     """Export from real upstream output shapes and check graph + numerical parity."""
     import onnx
 
+    wrapper.eval()
     with torch.inference_mode():
         expected = wrapper(*inputs)
         if skip_existing and path.is_file() and path.stat().st_size > 0:
@@ -103,6 +104,7 @@ def export_component(wrapper, inputs, path, input_names, output_names, verify=Fa
             wrapper, inputs, str(path), input_names=input_names, output_names=output_names,
             opset_version=DEFAULT_OPSET_VERSION, dynamo=False, do_constant_folding=True,
         )
+    wrapper.eval()
     onnx.checker.check_model(str(path))
     if not verify:
         return expected
@@ -156,25 +158,34 @@ def _exportable_geometry_forward(self, geo_prompt, img_feats, img_sizes, img_pos
         cur_img_feat = cur_img_feat.permute(1, 2, 0).view(N, C, H, W)
         img_feats = cur_img_feat
 
-    if not self.encode_boxes_as_points:
+    bs = boxes.shape[1] if boxes is not None else 1
+    if boxes.shape[0] == 0:
+        boxes_embeds = torch.zeros(0, bs, self.d_model, device=img_feats.device)
+        boxes_mask = torch.zeros(bs, 0, device=img_feats.device, dtype=torch.bool)
+    elif not self.encode_boxes_as_points:
         boxes_embeds, boxes_mask = self._encode_boxes(
             boxes=boxes,
             boxes_mask=boxes_mask,
             boxes_labels=boxes_labels,
             img_feats=img_feats,
         )
-        if points.shape[0] == 0:
-            final_embeds, final_mask = boxes_embeds, boxes_mask
-        else:
-            final_embeds, final_mask = self._encode_points(
-                points=points,
-                points_mask=points_mask,
-                points_labels=points_labels,
-                img_feats=img_feats,
-            )
-            final_embeds, final_mask = concat_padded_sequences(
-                final_embeds, final_mask, boxes_embeds, boxes_mask
-            )
+    else:
+        boxes_embeds, boxes_mask = self._encode_points(
+            points=boxes,
+            points_mask=boxes_mask,
+            points_labels=boxes_labels,
+            img_feats=img_feats,
+        )
+
+    if points.shape[0] == 0:
+        final_embeds, final_mask = boxes_embeds, boxes_mask
+    elif boxes.shape[0] == 0:
+        final_embeds, final_mask = self._encode_points(
+            points=points,
+            points_mask=points_mask,
+            points_labels=points_labels,
+            img_feats=img_feats,
+        )
     else:
         final_embeds, final_mask = self._encode_points(
             points=points,
@@ -182,14 +193,20 @@ def _exportable_geometry_forward(self, geo_prompt, img_feats, img_sizes, img_pos
             points_labels=points_labels,
             img_feats=img_feats,
         )
+        final_embeds, final_mask = concat_padded_sequences(
+            final_embeds, final_mask, boxes_embeds, boxes_mask
+        )
 
     bs = final_embeds.shape[1]
     if self.cls_embed is not None:
         cls = self.cls_embed.weight.view(1, 1, self.d_model).repeat(1, bs, 1)
         cls_mask = torch.zeros(bs, 1, dtype=final_mask.dtype, device=final_mask.device)
-        final_embeds, final_mask = concat_padded_sequences(
-            final_embeds, final_mask, cls, cls_mask
-        )
+        if final_embeds.shape[0] == 0:
+            final_embeds, final_mask = cls, cls_mask
+        else:
+            final_embeds, final_mask = concat_padded_sequences(
+                final_embeds, final_mask, cls, cls_mask
+            )
 
     if self.final_proj is not None:
         final_embeds = self.norm(self.final_proj(final_embeds))
@@ -222,9 +239,9 @@ def export_sam3_models(
         model = builder.build_sam3_image_model(
             checkpoint_path=str(checkpoint_path), load_from_HF=False, device=device, eval_mode=True
         ).float().eval()
-        vision = Sam3VisionEncoderExportWrapper(model)
-        text = Sam3TextEncoderExportWrapper(model)
-        decoder = Sam3GroundingDecoderExportWrapper(model)
+        vision = Sam3VisionEncoderExportWrapper(model).eval()
+        text = Sam3TextEncoderExportWrapper(model).eval()
+        decoder = Sam3GroundingDecoderExportWrapper(model).eval()
         # The actual forwards supply feature dimensions; no hand-written feature shapes.
         image = torch.rand(1, 3, DEFAULT_SAM3_IMAGE_SIZE, DEFAULT_SAM3_IMAGE_SIZE, device=device) * 2 - 1
         tokens = model.backbone.language_backbone.tokenizer(["metal part"], context_length=DEFAULT_SAM3_CONTEXT_LENGTH).to(device)
