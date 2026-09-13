@@ -23,6 +23,7 @@ from foundationpose_perception_pipeline.config import (
     DEFAULT_DATE,
     DEFAULT_RERANK_CUTOFF,
     DEFAULT_RERANK_FORMULA,
+    DEFAULT_SAM3_RESOLUTION,
     add_config_argument,
     settings_from_argv,
 )
@@ -79,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--confidence-threshold", type=float, default=settings.detection.sam3_confidence_threshold
     )
-    parser.add_argument("--resolution", type=int, default=1008)
+    parser.add_argument("--resolution", type=int, default=DEFAULT_SAM3_RESOLUTION)
     parser.add_argument(
         "--depth-source",
         choices=depth_source_choices(),

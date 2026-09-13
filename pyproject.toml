@@ -19,8 +19,11 @@ dependencies = [
   "opencv-python<5",
   "scipy<1.16",
   "pyyaml>=6",
-  # Pinned exactly, not floored: these are the versions the reported metrics were measured on,
-  # and a resolver left to its own devices picks a newer torch with a different CUDA build.
+  # Only `tools/export_sam3_to_onnx.py` imports torch -- every runtime stage is a TensorRT
+  # engine. It stays a core dependency anyway so that a plain `uv sync` can re-export SAM3
+  # without a second install step. Pinned exactly, not floored: these are the versions the
+  # exported engines were produced on, and a resolver left to its own devices picks a newer
+  # torch with a different CUDA build.
   "torch==2.10.0",
   "torchvision==0.25.0",
   "pillow>=11",
@@ -29,6 +32,12 @@ dependencies = [
   "einops>=0.8",
   "pycocotools>=2.0.10",
   "psutil>=7",
+  # Upstream SAM3's tokenizer splits on a `regex` pattern that `re` cannot express.
+  "regex",
+  # Upstream SAM3's `basic_clean` runs `ftfy.fix_text` before tokenizing. Our reimplementation
+  # does the same so prompt ids match upstream's exactly; see Sam3TextTokenizer. ftfy arrives
+  # transitively today, which is not something to rely on -- declare it.
+  "ftfy>=6.1",
   # sam3/model_builder.py does `import pkg_resources`, which ships inside setuptools and was
   # REMOVED in setuptools 81. Without this bound a fresh venv resolves setuptools >=81 and every
   # `import sam3` dies with ModuleNotFoundError: No module named 'pkg_resources'. Existing venvs
