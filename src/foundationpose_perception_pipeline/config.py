@@ -259,6 +259,10 @@ class ValidationSettings:
     cutoffs: list[float]
 
 
+DEFAULT_SAM3_RESOLUTION: int = 1008
+"""Square input the SAM3 graphs are exported at. Fixed by the export, not a tunable."""
+
+
 @dataclass(frozen=True)
 class Settings:
     """``defaults.yaml`` merged with one profile's ``overrides:`` block."""
