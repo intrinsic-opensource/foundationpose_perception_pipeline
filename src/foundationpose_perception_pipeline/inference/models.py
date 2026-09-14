@@ -44,5 +44,27 @@ class ModelPaths:
         return self.engine_cache / f"{name}.plan"
 
     def preferred(self, name: str) -> Path:
+        """Return the best artifact available for `name`, in precedence order.
+
+        1. `{name}.plan`, a user-supplied override.
+        2. A single `{name}__{fingerprint}.plan` from an earlier build. Returning it directly
+           skips re-hashing the ONNX, which `build_cached_engine` would otherwise do purely to
+           recompute a filename that is already sitting in the cache. For multi-gigabyte
+           encoders that hash dominates startup.
+        3. The ONNX source, which `TRTEngine` compiles through `build_cached_engine`.
+
+        Several fingerprinted plans means several build specs -- different GPU, TensorRT
+        version, precision or profile. Choosing between those is precisely the job the
+        fingerprint exists to do, so that case deliberately falls through to the ONNX and lets
+        `build_cached_engine` recompute the real fingerprint and select exactly.
+
+        Case 2 trusts a plan on its name alone: a plan left over from a superseded ONNX export
+        is reused rather than rebuilt. Remove stale plans from the cache after re-exporting.
+        """
         engine = self.engine(name)
-        return engine if engine.is_file() else self.onnx(name)
+        if engine.is_file():
+            return engine
+        cached = sorted(self.engine_cache.glob(f"{name}__*.plan"))
+        if len(cached) == 1:
+            return cached[0]
+        return self.onnx(name)
