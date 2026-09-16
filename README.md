@@ -161,7 +161,8 @@ checkout or require checkpoint authentication. Torch remains a declared project 
 
 ### 2.3 FoundationPose
 
-The FoundationPose Inference Library is open source (Apache-2.0):
+The FoundationPose Inference Library is open source (Apache-2.0). Its download script fetches
+the ONNX weights from [nvidia/foundationpose on Hugging Face](https://huggingface.co/nvidia/foundationpose):
 
 ```bash
 cd ..
@@ -219,9 +220,9 @@ path: an unset variable produces a clear error rather than silently pointing som
 ### 2.4 FoundationStereo
 
 Use the TAO `deployable_foundation_stereo_s_dynamic_v2.0` ONNX from the
-[NGC model page](https://catalog.ngc.nvidia.com/orgs/nvidia/tao/models/foundationstereo).
+[Hugging Face model page](https://huggingface.co/nvidia/c-foundationstereo-s).
 The pipeline runs the compiled engine directly through TensorRT and `cuda.bindings.runtime`.
-Model terms remain those of the NGC artifact.
+Model terms remain those of the Hugging Face artifact.
 
 Place the ONNX and any external weights in the configured model directory (see
 [model configuration](#model-directory-and-engine-cache)). With `depth.engine: null`, the default
@@ -800,13 +801,13 @@ not make its published checkpoints Apache-2.0.
 
 | Component | Code | Weights / checkpoint |
 |---|---|---|
-| FoundationPose Inference Library | Apache-2.0, public on [GitHub](https://github.com/nvidia-isaac/foundation-pose-inference-library) | separate NGC artifact — `nvidia/tao/foundationpose:deployable_v1.0` terms, **not** Apache-2.0 |
+| FoundationPose Inference Library | Apache-2.0, public on [GitHub](https://github.com/nvidia-isaac/foundation-pose-inference-library) | separate Hugging Face artifact — the [model page](https://huggingface.co/nvidia/foundationpose)'s terms, **not** Apache-2.0 |
 | SAM3 | `LicenseRef-Meta-SAM` (Meta's custom SAM License, not OSI-approved) | same license, and the checkpoint is **gated** — request access at <https://huggingface.co/facebook/sam3> |
-| FoundationStereo (TAO `deployable_*`) | executed as a TensorRT engine; no source is imported | separate NGC artifact — the [model page](https://catalog.ngc.nvidia.com/orgs/nvidia/tao/models/foundationstereo)'s terms |
+| FoundationStereo (TAO `deployable_*`) | executed as a TensorRT engine; no source is imported | separate Hugging Face artifact — the [model page](https://huggingface.co/nvidia/c-foundationstereo-s)'s terms |
 
 Three things to know before shipping anything built on this:
 
-- **The depth model is an NGC artifact under the model page's terms.** Nothing here imports
+- **The depth model is a Hugging Face artifact under the model page's terms.** Nothing here imports
   FoundationStereo's source: an engine is executed by TensorRT alone, so the obligation is the
   model's, not the code's. Read the model page before shipping anything built on it.
 - **The SAM3 checkpoint is gated and non-redistributable** — every user must request access
