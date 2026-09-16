@@ -11,6 +11,12 @@ from pathlib import Path
 from foundationpose_perception_pipeline.config import models_dir_default
 
 STEREO_MODEL = "deployable_foundation_stereo_s_dynamic_v2.0"
+SAM3_MODELS = {
+    "vision": "sam3_vision_encoder",
+    "text": "sam3_text_encoder",
+    "decoder": "sam3_mask_decoder",
+    "box_decoder": "sam3_box_decoder",
+}
 
 
 @dataclass(frozen=True)
