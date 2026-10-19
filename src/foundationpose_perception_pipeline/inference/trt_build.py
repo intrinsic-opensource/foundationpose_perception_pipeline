@@ -39,7 +39,9 @@ def _environment(device_id: int) -> tuple[str, str]:
     return str(trt.__version__), bytes(properties.name).split(b"\0", 1)[0].decode()
 
 
-def _key_spec(profiles: Profiles, precision: str, device_id: int) -> dict:
+def _key_spec(
+    profiles: Profiles, precision: str, device_id: int, tf32: bool = True, workspace_mb: int | None = None
+) -> dict:
     """The cache key: what makes two plans mutually unusable, and is free to compute.
 
     Deliberately excludes the ONNX digest. Hashing the source to derive a *filename* means
@@ -48,12 +50,16 @@ def _key_spec(profiles: Profiles, precision: str, device_id: int) -> dict:
     build time and checked on reuse -- it just is not on the lookup path.
 
     `profiles` and `tensorrt` are here because a mismatch in either yields a plan that cannot
-    be deserialised or cannot accept the caller's shapes, and both are free to obtain.
+    be deserialised or cannot accept the caller's shapes, and both are free to obtain. The
+    build options are here so plans built with different settings coexist instead of colliding.
     """
     if precision not in SUPPORTED_PRECISIONS:
         raise ValueError(f"Unsupported TensorRT precision: {precision}")
     tensorrt_version, gpu = _environment(device_id)
-    return {"profiles": profiles, "tensorrt": tensorrt_version, "gpu": gpu}
+    return {
+        "profiles": profiles, "tensorrt": tensorrt_version, "gpu": gpu,
+        "precision": precision, "tf32": tf32, "workspace_mb": workspace_mb,
+    }
 
 
 def _file_digest(path: Path) -> str:
@@ -70,7 +76,7 @@ def _file_digest(path: Path) -> str:
 
 
 def _sidecar(source: Path, key: dict, precision: str, tf32: bool, workspace_mb: int | None) -> dict:
-    """Everything worth knowing about a built plan, including the settings not in its key.
+    """Everything worth knowing about a built plan, including the source model's provenance.
 
     Written once per build, where a sha256 is negligible beside compiling an engine. `size`
     and `mtime_ns` exist so a reader can detect a re-exported ONNX without re-hashing it.
@@ -90,14 +96,13 @@ def _sidecar(source: Path, key: dict, precision: str, tf32: bool, workspace_mb: 
 def _check_reusable(
     destination: Path, source: Path, precision: str, tf32: bool, workspace_mb: int | None
 ) -> None:
-    """Reject a cached plan whose build settings differ from the ones asked for.
+    """Reject a cached plan whose build settings or source differ from the ones asked for.
 
-    `precision`, `tf32` and `workspace_mb` are not in the cache key, so a plan built with
-    different values lives at this same path. Without this check an fp16 plan would be served
-    to a caller that asked for fp32 -- no error, just quietly different numerics. The sidecar
-    makes that detectable for free.
+    `precision`, `tf32` and `workspace_mb` are part of the cache key, so a mismatch here means
+    the plan or its sidecar was placed by hand under a generated name. Fail rather than serve
+    an fp16 plan to a caller that asked for fp32.
 
-    A re-exported ONNX is caught the same way, comparing size and mtime rather than re-reading
+    A re-exported ONNX is caught by comparing size and mtime rather than re-reading
     the file; the digest is only consulted if those already disagree.
     """
     import logging
@@ -114,8 +119,7 @@ def _check_reusable(
         if field in recorded and recorded[field] != wanted:
             raise RuntimeError(
                 f"{destination.name} was built with {field}={recorded[field]!r} but "
-                f"{wanted!r} was requested. These settings are not part of the cache key, so "
-                f"the two cannot coexist: delete the plan and rebuild, or pass force=True."
+                f"{wanted!r} was requested. Delete the plan and rebuild, or pass force=True."
             )
 
     stat = source.stat()
@@ -140,15 +144,9 @@ def engine_path_for_model(
     onnx_path: Path | str, *, profiles: Profiles | None = None, precision: str = DEFAULT_PRECISION,
     tf32: bool = True, workspace_mb: int | None = None, device_id: int = DEFAULT_DEVICE_ID, models_dir: Path | str | None = None,
 ) -> Path:
-    """Where the plan for this model belongs. Reads nothing; safe before the ONNX exists.
-
-    `tf32` and `workspace_mb` are accepted so this mirrors `build_cached_engine`, but they no
-    longer affect the path: they are recorded in the sidecar and verified on reuse instead of
-    being encoded in the name. `precision` is likewise validated here but not part of the key.
-    """
-    del tf32, workspace_mb  # Recorded in the sidecar, checked by _check_reusable.
+    """Where the plan for this model belongs. Reads nothing; safe before the ONNX exists."""
     source = Path(onnx_path).expanduser().resolve()
-    return _destination(source, _key_spec(profiles or {}, precision, device_id), models_dir)
+    return _destination(source, _key_spec(profiles or {}, precision, device_id, tf32, workspace_mb), models_dir)
 
 
 def build_cached_engine(
@@ -168,7 +166,7 @@ def build_cached_engine(
         raise ValueError("Specify profiles or input_shapes, not both")
     profiles = profiles or {name: (shape, shape, shape) for name, shape in (input_shapes or {}).items()}
     source = Path(onnx_path).expanduser().resolve()
-    key = _key_spec(profiles, precision, device_id)
+    key = _key_spec(profiles, precision, device_id, tf32, workspace_mb)
     destination = _destination(source, key, models_dir)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.with_suffix(".lock").open("a") as lock:
@@ -215,10 +213,11 @@ def build_cached_engine(
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(serialized)
+            # Sidecar first: a crash before the rename must not leave a plan without one.
+            destination.with_suffix(".plan.json").write_text(
+                json.dumps(_sidecar(source, key, precision, tf32, workspace_mb), indent=2), encoding="utf-8"
+            )
             os.replace(temporary, destination)
         finally:
             Path(temporary).unlink(missing_ok=True)
-        destination.with_suffix(".plan.json").write_text(
-            json.dumps(_sidecar(source, key, precision, tf32, workspace_mb), indent=2), encoding="utf-8"
-        )
         return destination

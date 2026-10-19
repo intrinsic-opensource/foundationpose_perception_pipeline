@@ -119,9 +119,10 @@ depth:
   #
   # A compiled plan is machine-specific: it is built for one GPU architecture, one TensorRT
   # version, one precision and one input shape, and none of that survives being copied to another
-  # machine. The shared cache in `models_dir/engine_cache/` keys on exactly those, plus the source
-  # model's hash, so a stale plan is never silently reused -- a changed input produces a different
-  # cache entry rather than a wrong answer. Artifacts are otherwise treated as FIXED: replacing or
+  # machine. The shared cache in `models_dir/engine_cache/` keys on exactly those, and its JSON
+  # sidecar records the source model's hash, so a stale plan is never silently reused -- a changed
+  # input produces a different cache entry or a rebuild error rather than a wrong answer.
+  # Artifacts are otherwise treated as FIXED: replacing or
   # re-exporting a model in place means clearing the plans built from it, including any named
   # `.plan` you point this setting at directly.
   #

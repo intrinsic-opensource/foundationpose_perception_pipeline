@@ -215,8 +215,9 @@ the conventional filenames and always derives `engine_cache/` beneath the select
 
 An explicit stereo model path wins. Otherwise a conventional named plan wins over its ONNX.
 With ONNX, `trt_build.py` computes a fingerprint and either reuses the matching plan or builds
-it. The fingerprint covers ONNX/external initializer contents, GPU name, TensorRT version,
-profiles, precision, TF32 and workspace settings. No glob/newest-file search is involved.
+it. The fingerprint covers GPU name, TensorRT version, profiles, precision, TF32 and workspace
+settings; the source digest is recorded in the JSON sidecar and checked on reuse. No
+glob/newest-file search is involved.
 Plans are written under the configured root even when an explicit stereo ONNX is elsewhere.
 An explicit SAM3 model-directory override changes both its source and cache root.
 
@@ -233,7 +234,7 @@ Automatic stereo mode creates a static profile from the actual padded pair, rebu
 a cache miss for that shape. Prebuilding from a scene derives a fixed fitting shape, which can
 differ from automatic padding; identical profiles/options share a key, and a supplied plan
 pins the prebuilt profile. Fixed-plan fitting rescales by width and pads height; an excess
-height is rejected instead of cropped.
+height is cropped from the bottom, with a warning naming the rows lost.
 
 SAM3 exports four batch-one graphs. Vision uses 1008×1008 inputs; text uses 32 tokens.
 Vision, text and mask-decoder plans build/load when the processor is constructed. The single-box

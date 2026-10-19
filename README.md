@@ -286,8 +286,9 @@ No separate compilation command is required. SAM3 builds or reuses vision, text 
 plans when the processor is created. The box decoder builds/loads lazily on first refinement.
 
 A compiled plan is **not portable** — it is specific to the GPU architecture, the TensorRT
-version, the precision and the input shape. `engine_cache/` keys on exactly those plus the source
-model's hash, so a stale plan is never silently reused. Do not commit plans; rebuild after any
+version, the precision and the input shape. `engine_cache/` keys on exactly those, and the JSON
+sidecar records the source model's hash, which is checked on reuse, so a stale plan is never
+silently reused. Do not commit plans; rebuild after any
 TensorRT change, including one driven by the FoundationPose Inference Library, which pins the same
 `tensorrt-cu13` version.
 
@@ -495,10 +496,10 @@ Resolution is deterministic; the runtime does not scan for the newest plan:
 3. If no named plan exists, use `<model-stem>.onnx`. Compute its cache key and reuse the
    corresponding fingerprinted plan, or compile it on the deployment GPU.
 
-The key includes source ONNX and referenced external initializer weight contents, GPU name,
-TensorRT version, input profiles, precision, TF32 and workspace settings. Builds use a file lock
-and publish plans by atomic rename. Cache lookup still reads and fingerprints the ONNX files;
-keep them and their external weights available when using automatic mode.
+The key includes GPU name, TensorRT version, input profiles, precision, TF32 and workspace
+settings. The source ONNX and external weight digest is recorded in the plan's JSON sidecar and
+checked on reuse. Builds use a file lock and publish plans by atomic rename. Keep the ONNX files
+and their external weights available when using automatic mode.
 
 A named or explicitly selected plan bypasses ONNX fingerprinting. You are responsible for its
 compatibility and freshness; a bad supplied plan fails to load rather than silently rebuilding.
@@ -672,7 +673,8 @@ python tools/build_stereo_engine.py --config tless \
 
 To use that exact prebuilt profile, set `overrides.depth.engine` to the printed plan.
 Use the scene-derived shape instead of independently rounding raw image dimensions: fixed-plan
-fitting resizes by width and then pads height. An insufficient engine height is rejected.
+fitting resizes by width and then pads height. An insufficient engine height is cropped from
+the bottom, with a warning naming the rows lost.
 
 **4. Cache ground truth and run**, exactly as for any other dataset:
 

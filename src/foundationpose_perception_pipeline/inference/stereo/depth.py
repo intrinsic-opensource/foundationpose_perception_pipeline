@@ -529,10 +529,20 @@ def scene_depth(
         # Crop the padding off before rescaling: those rows/columns are padded pixels, and
         # interpolating them back up would smear invented content into the real image.
         disparity = disparity[: fitted.content_height, : fitted.content_width]
-        disparity = (
-            cv2.resize(disparity, (rect_left.shape[1], rect_left.shape[0]), interpolation=cv2.INTER_LINEAR)
+        # Resize back by the width scale only. When `fit_to_model` cropped, the content covers
+        # just the top rows of `rect_left`; the cropped-away rows stay NaN rather than stretched.
+        rect_h, rect_w = rect_left.shape[:2]
+        valid_h = (
+            rect_h
+            if round(rect_h * fitted.width_scale) <= fitted.content_height
+            else round(fitted.content_height / fitted.width_scale)
+        )
+        resized = (
+            cv2.resize(disparity, (rect_w, valid_h), interpolation=cv2.INTER_LINEAR)
             / fitted.width_scale
         )
+        disparity = np.full((rect_h, rect_w), np.nan, dtype=np.float32)
+        disparity[:valid_h] = resized
     if mirrored:
         disparity = np.ascontiguousarray(disparity[:, ::-1])
         rect_left = np.ascontiguousarray(rect_left[:, ::-1])

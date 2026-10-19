@@ -62,7 +62,9 @@ class Sam3TrtProcessor:
 
         self.paths = ModelPaths.configured(models_dir)
         vocab = self.paths.root / BPE_VOCAB_FILENAME
-        self.tokenizer = Sam3TextTokenizer(vocab) if vocab.exists() else None
+        if not vocab.is_file():
+            raise FileNotFoundError(f"SAM3 vocabulary not found: {vocab}; copy it from the export directory")
+        self.tokenizer = Sam3TextTokenizer(vocab)
         self.v_engine = self._load_engine("vision")
         self.t_engine = self._load_engine("text")
         self.d_engine = self._load_engine("decoder")
@@ -100,14 +102,12 @@ class Sam3TrtProcessor:
         logger.info("[SAM3] Running SAM3 with prompt: '%s' (confidence_threshold=%.4f)", prompt, self.confidence_threshold)
         if "backbone_out" not in state:
             raise ValueError("Must call set_image before set_text_prompt")
-        if self.tokenizer is None:
-            raise RuntimeError("SAM3 vocabulary is missing; copy it from the export directory")
 
         tokens_np = self.tokenizer.tokenize([prompt], context_length=DEFAULT_CONTEXT_LENGTH)
         t_out = self.t_engine.infer({"input_ids": tokens_np}, device_outputs=True)
 
-        v_out = state["backbone_out"]
-        v_out.update(lang_feat=t_out["lang_feat"], lang_mask=t_out["lang_mask"])
+        # A new dict per prompt: `backbone_out` is shared with the image state and earlier prompts.
+        state["backbone_out"] = {**state["backbone_out"], "lang_feat": t_out["lang_feat"], "lang_mask": t_out["lang_mask"]}
         return self._decode(self.d_engine, state)
 
     def add_geometric_prompt(self, box: list[float], label: bool, state: dict[str, Any]) -> dict[str, Any]:
@@ -118,13 +118,11 @@ class Sam3TrtProcessor:
         lang_feat = v_out.get("lang_feat")
         lang_mask = v_out.get("lang_mask")
         if lang_feat is None or lang_mask is None:
-            if self.tokenizer is None:
-                raise RuntimeError("SAM3 vocabulary is missing; copy it from the export directory")
             dummy = self.tokenizer.tokenize(["visual"], context_length=DEFAULT_CONTEXT_LENGTH)
             t_out = self.t_engine.infer({"input_ids": dummy}, device_outputs=True)
             lang_feat, lang_mask = t_out["lang_feat"], t_out["lang_mask"]
 
-        v_out.update(lang_feat=lang_feat, lang_mask=lang_mask)
+        state["backbone_out"] = {**v_out, "lang_feat": lang_feat, "lang_mask": lang_mask}
         if self.b_engine is None:
             self.b_engine = self._load_engine("box_decoder")
         return self._decode(self.b_engine, state, {

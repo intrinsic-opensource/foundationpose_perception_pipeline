@@ -103,22 +103,20 @@ or from PyTorch's own index. They are not redistributed with this code.
 | regex | [Apache-2.0 additions; inherited Python license terms](https://github.com/mrabarnett/mrab-regex/blob/hg/LICENSE.txt) | regex contributors; inherited CPython/Secret Labs notices | <https://github.com/mrabarnett/mrab-regex> |
 | ftfy | Apache-2.0 | Robyn Speer | <https://github.com/rspeer/python-ftfy> |
 | setuptools | MIT | Jason R. Coombs and the Setuptools contributors | <https://github.com/pypa/setuptools> |
+| cuda-bindings | License terms supplied with the installed NVIDIA CUDA Python distribution | NVIDIA Corporation | <https://github.com/NVIDIA/cuda-python> |
+| tensorrt-cu13 | NVIDIA TensorRT license terms, supplied with the package | NVIDIA Corporation | <https://developer.nvidia.com/tensorrt> |
+| nvidia-cuda-runtime | NVIDIA CUDA Toolkit EULA | NVIDIA Corporation | <https://docs.nvidia.com/cuda/eula/> |
 
 ---
 
 ## 3. Optional and separately installed dependencies
 
-Not installed by a default `uv sync`. TensorRT, the CUDA runtime and the CUDA bindings are no
-longer optional -- they are declared in `[project].dependencies` and listed in section 2, because
-every inference stage is now a TensorRT engine. See [README.md](README.md) for installation.
+Not installed by a default `uv sync`. See [README.md](README.md) for installation.
 
 | Component | License | Project |
 |---|---|---|
 | markdown | BSD-3-Clause | <https://github.com/Python-Markdown/markdown> |
 | ruff | MIT | <https://github.com/astral-sh/ruff> |
-| cuda-bindings | License terms supplied with the installed NVIDIA CUDA Python distribution | <https://github.com/NVIDIA/cuda-python> |
-| tensorrt-cu13 | NVIDIA TensorRT license terms, supplied with the package | <https://developer.nvidia.com/tensorrt> |
-| nvidia-cuda-runtime | NVIDIA CUDA Toolkit EULA | <https://docs.nvidia.com/cuda/eula/> |
 
 ---
 
