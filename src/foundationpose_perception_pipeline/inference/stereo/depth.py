@@ -72,7 +72,7 @@ class FittedPair:
 
 
 def fit_to_model(engine: StereoEngine, left_rgb: np.ndarray, right_rgb: np.ndarray) -> FittedPair:
-    """Prepare a rectified pair for a static engine: scale uniformly to fit, then pad onto canvas.
+    """Prepare a rectified pair for a static engine: scale by width, then pad the height.
 
     **Scale and pad, not stretch.** The obvious implementation resizes straight to the engine's
     HxW, and that is wrong in a way that does not announce itself: the rectified pair's aspect
@@ -84,37 +84,56 @@ def fit_to_model(engine: StereoEngine, left_rgb: np.ndarray, right_rgb: np.ndarr
     depth difference into metres while the median stayed under a millimetre, i.e. it degrades
     exactly the edges that matter and nowhere a summary statistic would notice.
 
-    Scaling uniformly by `min(model_w / src_w, model_h / src_h)` and placing the resized pair in
-    the top-left corner of a `(model_h, model_w)` canvas keeps the aspect exact for any camera
-    aspect ratio without cropping or stretching.
+    Scaling by width and replicate-padding the remaining rows keeps the aspect exact and matches
+    what the geometry expects when it pads a rectified pair to a multiple of 32 -- which is what
+    keeps a comparison between two runtimes from becoming a comparison between two preprocessing
+    schemes.
 
     Note the direction of `width_scale`: TAO's own evaluator rescales the ground truth *up* to
     engine resolution instead (`stereo_evaluator.py`). Ours is the direction that keeps the depth
     map on the base camera's grid, which is what FoundationPose consumes.
     """
-    src_h, src_w = left_rgb.shape[:2]
     if engine.fixed_hw is None:
-        return FittedPair(left_rgb, right_rgb, 1.0, src_h, src_w)
+        return FittedPair(left_rgb, right_rgb, 1.0, left_rgb.shape[0], left_rgb.shape[1])
 
     model_h, model_w = engine.fixed_hw
+    src_h, src_w = left_rgb.shape[:2]
     if (src_h, src_w) == (model_h, model_w):
         return FittedPair(left_rgb, right_rgb, 1.0, model_h, model_w)
 
-    resize_scale = min(model_w / src_w, model_h / src_h)
-    resized_w = min(model_w, max(1, round(src_w * resize_scale)))
-    resized_h = min(model_h, max(1, round(src_h * resize_scale)))
-    interpolation = cv2.INTER_AREA if resize_scale < 1.0 else cv2.INTER_LINEAR
-    resized_left = cv2.resize(left_rgb, (resized_w, resized_h), interpolation=interpolation)
-    resized_right = cv2.resize(right_rgb, (resized_w, resized_h), interpolation=interpolation)
+    width_scale = model_w / src_w
+    scaled_h = round(src_h * width_scale)
+    interpolation = cv2.INTER_AREA if width_scale < 1.0 else cv2.INTER_LINEAR
+    left = cv2.resize(left_rgb, (model_w, scaled_h), interpolation=interpolation)
+    right = cv2.resize(right_rgb, (model_w, scaled_h), interpolation=interpolation)
 
-    if (resized_h, resized_w) == (model_h, model_w):
-        return FittedPair(resized_left, resized_right, resize_scale, model_h, model_w)
+    if scaled_h == model_h:
+        return FittedPair(left, right, width_scale, model_h, model_w)
+    if scaled_h < model_h:
+        # Pad the bottom only: the origin stays put, so the rectified intrinsics still describe
+        # the image. Replicate rather than a constant, matching the padding in `infer_disparity`.
+        pad = model_h - scaled_h
+        left = cv2.copyMakeBorder(left, 0, pad, 0, 0, cv2.BORDER_REPLICATE)
+        right = cv2.copyMakeBorder(right, 0, pad, 0, 0, cv2.BORDER_REPLICATE)
+        return FittedPair(left, right, width_scale, scaled_h, model_w)
 
-    left_canvas = np.zeros((model_h, model_w, *left_rgb.shape[2:]), dtype=left_rgb.dtype)
-    right_canvas = np.zeros((model_h, model_w, *right_rgb.shape[2:]), dtype=right_rgb.dtype)
-    left_canvas[:resized_h, :resized_w] = resized_left
-    right_canvas[:resized_h, :resized_w] = resized_right
-    return FittedPair(left_canvas, right_canvas, resize_scale, resized_h, resized_w)
+    # Taller than the engine even after scaling by width: the engine's aspect ratio is wrong for
+    # this rig and no amount of padding helps. Crop rather than stretch -- a crop loses the
+    # bottom of the frame, which is visible and local, where a stretch corrupts the whole image
+    # in a way nothing downstream can detect.
+    logger.warning(
+        "Engine resolution is %dx%d, input image resolution is %dx%d, rescaled to %dx%d, "
+        "resulting in %d pixels cropped. Consider recompiling the engine "
+        "(tools/build_stereo_engine.py --shape-from-scene) to use the full frame.",
+        model_w,
+        model_h,
+        src_w,
+        src_h,
+        model_w,
+        scaled_h,
+        scaled_h - model_h,
+    )
+    return FittedPair(left[:model_h], right[:model_h], width_scale, model_h, model_w)
 
 
 def disparity_to_depth_m(
