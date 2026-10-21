@@ -68,7 +68,6 @@ from foundationpose_perception_pipeline.inference.depth import (  # noqa: E402
     resolve_backend,
 )
 from foundationpose_perception_pipeline.inference.engine import PoseEstimator  # noqa: E402
-from foundationpose_perception_pipeline.inference.models import ModelPaths  # noqa: E402
 from foundationpose_perception_pipeline.inference.source import (  # noqa: E402
     add_source_arguments,
     depth_source_choices,
@@ -260,11 +259,13 @@ def run_inference(args: argparse.Namespace) -> Path:
     # callbacks to the run's own stack once setup has succeeded.
     with ExitStack() as setup:
         pose_registry = FoundationPoseRegistry(
+            # Per-run by default, as documented: the SDK's engines are a run artifact and stay out
+            # of the shared stereo/SAM3 cache under models_dir.
             engine_cache_dir=(
-                args.fp_engine_cache_dir.expanduser().resolve()
+                args.fp_engine_cache_dir.expanduser()
                 if args.fp_engine_cache_dir is not None
-                else ModelPaths.configured(settings.models_dir).engine_cache
-            ),
+                else output_dir / "foundationpose_engine_cache"
+            ).resolve(),
             refine_model_path=refine_model,
             score_model_path=score_model,
             models_subdir=args.models_subdir,
