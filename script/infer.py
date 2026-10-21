@@ -237,47 +237,10 @@ def run_inference(args: argparse.Namespace) -> Path:
         else None
     )
 
-    _, refine_model, score_model = ensure_foundationpose_paths(args)
-    pose_renderer = PoseRenderer(args.dataset_root, args.models_subdir)
-    pose_registry = FoundationPoseRegistry(
-        engine_cache_dir=(
-            args.fp_engine_cache_dir.expanduser().resolve()
-            if args.fp_engine_cache_dir is not None
-            else ModelPaths.configured(settings.models_dir).engine_cache
-        ),
-        refine_model_path=refine_model,
-        score_model_path=score_model,
-        models_subdir=args.models_subdir,
-        device_id=args.fp_device_id,
-        prepare_batch=args.fp_prepare_batch,
-    )
-
-    from foundationpose_perception_pipeline.inference.sam3.trt_processor import Sam3TrtProcessor
-
-    processor = Sam3TrtProcessor(
-        models_dir=args.sam3_models_dir,
-        resolution=args.resolution,
-        device=args.device,
-        confidence_threshold=args.confidence_threshold,
-    )
-    # Built once from the CLI; each stage then receives only its own section.
-    inference_config = InferenceConfig.from_args(args)
-    pose_estimator = PoseEstimator(
-        processor=processor,
-        pose_registry=pose_registry,
-        pose_renderer=pose_renderer,
-        dataset_root=args.dataset_root,
-        run_foundationpose_for_proposals=run_foundationpose_for_proposals,
-        apply_sam3_refinement=apply_sam3_refinement,
-        select_proposals=select_proposals,
-        mark_selected_filter_results=mark_selected_filter_results,
-        base_text_state_from_prompt_state=base_text_state_from_prompt_state,
-        no_refinement_policy=NO_REFINEMENT_POLICY,
-    )
-
     # Resolved once, before any scene: which depth backend this run uses is a property of the
     # run, and `--depth-backend` exists so a contradiction fails here rather than being
-    # discovered in the metrics.
+    # discovered in the metrics. Checked before any engine is built, so a bad stereo model
+    # path fails in seconds rather than after the SAM3 plans have compiled.
     depth_source = registered_sources()[args.depth_source]
     if depth_source.uses_depth_backend:
         depth_backend = resolve_backend(args.foundation_stereo_model, getattr(args, "depth_backend", "auto"))
@@ -286,12 +249,57 @@ def run_inference(args: argparse.Namespace) -> Path:
             + (f" ({args.foundation_stereo_model})" if args.foundation_stereo_model else ""),
             flush=True,
         )
+    # Built once from the CLI; each stage then receives only its own section. Also validated
+    # before any engine is built.
+    inference_config = InferenceConfig.from_args(args)
+
+    _, refine_model, score_model = ensure_foundationpose_paths(args)
+    pose_renderer = PoseRenderer(args.dataset_root, args.models_subdir)
+    # Each resource registers its release the moment it exists, so a failure anywhere after it
+    # -- including in the constructors that follow -- still releases it. `pop_all` hands the
+    # callbacks to the run's own stack once setup has succeeded.
+    with ExitStack() as setup:
+        pose_registry = FoundationPoseRegistry(
+            engine_cache_dir=(
+                args.fp_engine_cache_dir.expanduser().resolve()
+                if args.fp_engine_cache_dir is not None
+                else ModelPaths.configured(settings.models_dir).engine_cache
+            ),
+            refine_model_path=refine_model,
+            score_model_path=score_model,
+            models_subdir=args.models_subdir,
+            device_id=args.fp_device_id,
+            prepare_batch=args.fp_prepare_batch,
+        )
+        setup.callback(pose_registry.close)
+
+        from foundationpose_perception_pipeline.inference.sam3.trt_processor import Sam3TrtProcessor
+
+        processor = Sam3TrtProcessor(
+            models_dir=args.sam3_models_dir,
+            resolution=args.resolution,
+            device=args.device,
+            confidence_threshold=args.confidence_threshold,
+        )
+        setup.callback(processor.release)
+        pose_estimator = PoseEstimator(
+            processor=processor,
+            pose_registry=pose_registry,
+            pose_renderer=pose_renderer,
+            dataset_root=args.dataset_root,
+            run_foundationpose_for_proposals=run_foundationpose_for_proposals,
+            apply_sam3_refinement=apply_sam3_refinement,
+            select_proposals=select_proposals,
+            mark_selected_filter_results=mark_selected_filter_results,
+            base_text_state_from_prompt_state=base_text_state_from_prompt_state,
+            no_refinement_policy=NO_REFINEMENT_POLICY,
+        )
+        cleanup = setup.pop_all()
 
     predictions_path = output_dir / "predictions.jsonl"
     runtime_rows: list[dict[str, Any]] = []
-    with predictions_path.open("w", encoding="utf-8") as predictions_file, ExitStack() as cleanup:
-        cleanup.callback(processor.release)
-        cleanup.callback(pose_registry.close)
+    # `cleanup` is entered first so it still runs if opening the predictions file fails.
+    with cleanup, predictions_path.open("w", encoding="utf-8") as predictions_file:
         for scene_id in tqdm(scene_ids, desc=f"{args.dataset} inference"):
             scene_started = time.perf_counter()
             scene_dir = dataset_dir / args.split / f"{scene_id:06d}"

@@ -498,7 +498,10 @@ Resolution is deterministic; the runtime does not scan for the newest plan:
 
 The key includes GPU name, TensorRT version, input profiles, precision, TF32 and workspace
 settings. The source ONNX and external weight digest is recorded in the plan's JSON sidecar and
-checked on reuse. Builds use a file lock and publish plans by atomic rename. Keep the ONNX files
+checked on reuse. Builds use a file lock and publish the plan, then its sidecar, each by atomic
+rename; a generated plan without a readable sidecar counts as an interrupted build and is rebuilt.
+When copying a cache to another machine of the same spec, copy the `.plan.json` files with the
+plans. Keep the ONNX files
 and their external weights available when using automatic mode.
 
 A named or explicitly selected plan bypasses ONNX fingerprinting. You are responsible for its

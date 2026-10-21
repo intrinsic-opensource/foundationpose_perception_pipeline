@@ -95,8 +95,14 @@ def _sidecar(source: Path, key: dict, precision: str, tf32: bool, workspace_mb: 
 
 def _check_reusable(
     destination: Path, source: Path, precision: str, tf32: bool, workspace_mb: int | None
-) -> None:
-    """Reject a cached plan whose build settings or source differ from the ones asked for.
+) -> bool:
+    """Decide whether the cached plan at `destination` may be served for this request.
+
+    The sidecar is the plan's proof of completion: `build_cached_engine` publishes it only after
+    the plan it describes is in place. A generated plan without a readable sidecar is therefore
+    an interrupted build (or one copied without its sidecar), not a trustworthy cache hit, and
+    returns False so the caller rebuilds it. Hand-supplied plans belong at the named
+    `{name}.plan` path or an explicit model path, which never reach this function.
 
     `precision`, `tf32` and `workspace_mb` are part of the cache key, so a mismatch here means
     the plan or its sidecar was placed by hand under a generated name. Fail rather than serve
@@ -107,13 +113,15 @@ def _check_reusable(
     """
     import logging
 
+    log = logging.getLogger(__name__)
     sidecar = destination.with_suffix(".plan.json")
-    if not sidecar.is_file():
-        return  # Plan supplied by hand, e.g. staged into a container image. Trust the caller.
     try:
-        recorded = json.loads(sidecar.read_text())
+        recorded = json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return
+        recorded = None
+    if not isinstance(recorded, dict) or "model_sha256" not in recorded:
+        log.warning("%s has no valid sidecar (interrupted build?); rebuilding it", destination.name)
+        return False
 
     for field, wanted in (("precision", precision), ("tf32", tf32), ("workspace_mb", workspace_mb)):
         if field in recorded and recorded[field] != wanted:
@@ -123,15 +131,14 @@ def _check_reusable(
             )
 
     stat = source.stat()
-    if "model_size" in recorded and (
-        recorded["model_size"] != stat.st_size or recorded.get("model_mtime_ns") != stat.st_mtime_ns
-    ):
-        if recorded.get("model_sha256") != _file_digest(source):
+    if recorded.get("model_size") != stat.st_size or recorded.get("model_mtime_ns") != stat.st_mtime_ns:
+        if recorded["model_sha256"] != _file_digest(source):
             raise RuntimeError(
                 f"{destination.name} was built from a different {source.name}. Delete the "
                 f"stale plan and rebuild, or pass force=True."
             )
-        logging.getLogger(__name__).debug("%s touched but unchanged; reusing %s", source.name, destination.name)
+        log.debug("%s touched but unchanged; reusing %s", source.name, destination.name)
+    return True
 
 
 def _destination(source: Path, key: dict, models_dir: Path | str | None) -> Path:
@@ -171,8 +178,12 @@ def build_cached_engine(
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.with_suffix(".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if not force and destination.is_file() and destination.stat().st_size:
-            _check_reusable(destination, source, precision, tf32, workspace_mb)
+        if (
+            not force
+            and destination.is_file()
+            and destination.stat().st_size
+            and _check_reusable(destination, source, precision, tf32, workspace_mb)
+        ):
             return destination
         logging.getLogger(__name__).info("Building TensorRT engine %s from %s", destination, source)
         logger = trt.Logger(trt.Logger.WARNING)
@@ -209,15 +220,27 @@ def build_cached_engine(
         serialized = builder.build_serialized_network(network, config)
         if serialized is None:
             raise RuntimeError(f"TensorRT failed to build {source}")
-        fd, temporary = tempfile.mkstemp(dir=destination.parent, suffix=".plan.tmp")
+        # Publish as one generation. The sidecar is the plan's proof of completion, so it goes
+        # last: drop the old one, swap the plan in atomically, then publish the new sidecar
+        # atomically. A crash at any point leaves at worst a plan without a sidecar, which
+        # `_check_reusable` rebuilds -- never an old plan paired with new metadata. The plan path
+        # itself always holds a complete file, so a concurrent reader never sees it missing.
+        sidecar = destination.with_suffix(".plan.json")
+        metadata = json.dumps(_sidecar(source, key, precision, tf32, workspace_mb), indent=2)
+        temporaries: list[str] = []
         try:
+            fd, temporary = tempfile.mkstemp(dir=destination.parent, suffix=".plan.tmp")
+            temporaries.append(temporary)
             with os.fdopen(fd, "wb") as handle:
                 handle.write(serialized)
-            # Sidecar first: a crash before the rename must not leave a plan without one.
-            destination.with_suffix(".plan.json").write_text(
-                json.dumps(_sidecar(source, key, precision, tf32, workspace_mb), indent=2), encoding="utf-8"
-            )
+            fd, temporary_sidecar = tempfile.mkstemp(dir=destination.parent, suffix=".plan.json.tmp")
+            temporaries.append(temporary_sidecar)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(metadata)
+            sidecar.unlink(missing_ok=True)
             os.replace(temporary, destination)
+            os.replace(temporary_sidecar, sidecar)
         finally:
-            Path(temporary).unlink(missing_ok=True)
+            for path in temporaries:
+                Path(path).unlink(missing_ok=True)
         return destination

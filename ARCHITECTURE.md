@@ -222,7 +222,9 @@ Plans are written under the configured root even when an explicit stereo ONNX is
 An explicit SAM3 model-directory override changes both its source and cache root.
 
 Concurrent builders serialize through a per-plan file lock; a completed plan is published by
-atomic rename, with a JSON build specification beside it. Named or explicitly selected plans
+atomic rename, and its JSON build specification is published after it, also atomically. The
+sidecar marks a finished build: a generated plan without a readable one is rebuilt, never reused.
+Named or explicitly selected plans
 bypass source fingerprinting and require manual replacement after model/runtime changes.
 Fingerprint lookup requires readable source/weight files, and a cache miss requires a writable
 model directory. See [README model configuration](README.md#model-directory-and-engine-cache)
