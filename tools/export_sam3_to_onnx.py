@@ -13,7 +13,7 @@
 # Keep adapted upstream code confined to this file so the rest of the tree stays Apache-2.0.
 """Export batch-one SAM3 vision, text, text decoder and single-box decoder to ONNX.
 
-Targets facebookresearch/sam3 revision 96914d2425f90a64f45ca977c2b5165418099543.
+Targets facebookresearch/sam3 revision 608457d816009fc369a02c692f27efdd7256b442.
 Uses upstream forward_grounding, including geometry encoding and presence scores.
 The two decoder graphs preserve the distinct empty-prompt and one-box branches;
 no dynamic batching or unsupported FP16 conversion is advertised.
@@ -211,7 +211,10 @@ def _exportable_geometry_forward(self, geo_prompt, img_feats, img_sizes, img_pos
 
 
 def export_sam3_models(
-    checkpoint_path: Path, output_dir: Path, device: str = "cuda", skip_existing: bool = False
+    checkpoint_path: Path,
+    output_dir: Path,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    skip_existing: bool = False,
 ):
     import sam3
     import sam3.model.geometry_encoders as geo_enc
@@ -225,7 +228,7 @@ def export_sam3_models(
          patch.object(geo_enc.SequenceGeometryEncoder, "forward", _exportable_geometry_forward):
         model = builder.build_sam3_image_model(
             checkpoint_path=str(checkpoint_path), load_from_HF=False, device=device, eval_mode=True
-        ).float().eval()
+        ).to(device).float().eval()
         vision = Sam3VisionEncoderExportWrapper(model).eval()
         text = Sam3TextEncoderExportWrapper(model).eval()
         decoder = Sam3GroundingDecoderExportWrapper(model).eval()
@@ -254,15 +257,17 @@ def main():
     add_config_argument(parser)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=models_dir_default())
+    parser.add_argument(
+        "--device",
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Torch device used for tracing and export (defaults to cuda if available, else cpu)",
+    )
     parser.add_argument("--skip-existing", action="store_true", help="Skip re-exporting existing ONNX files")
     args = parser.parse_args()
-    if not torch.cuda.is_available():
-        # Upstream SAM3 builds its position-encoding and boxRPB caches with a hardcoded
-        # device="cuda" in __init__, so there is no CPU export path to offer.
-        raise SystemExit("Export needs a CUDA device. Select one with CUDA_VISIBLE_DEVICES.")
     export_sam3_models(
         args.checkpoint.expanduser().resolve(),
         args.output_dir.expanduser().resolve(),
+        device=args.device,
         skip_existing=args.skip_existing,
     )
 

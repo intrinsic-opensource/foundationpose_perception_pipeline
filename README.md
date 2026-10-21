@@ -123,7 +123,7 @@ machines and not the author's. The symptom is `ModuleNotFoundError: No module na
 cd ..
 git clone https://github.com/facebookresearch/sam3
 cd sam3
-git checkout 96914d2425f90a64f45ca977c2b5165418099543
+git fetch origin pull/637/head && git checkout 608457d816009fc369a02c692f27efdd7256b442
 uv pip install --python ../pipeline/.venv/bin/python -e .
 cd ../pipeline
 ```
@@ -143,7 +143,7 @@ PyPI is a different package.
 
 | | |
 |---|---|
-| `facebookresearch/sam3` commit | `96914d2425f90a64f45ca977c2b5165418099543` |
+| `facebookresearch/sam3` commit | `608457d816009fc369a02c692f27efdd7256b442` ([PR #637](https://github.com/facebookresearch/sam3/pull/637)) |
 | `facebook/sam3` checkpoint revision | `3c879f39826c281e95690f02c7821c4de09afae7` |
 | `sam3.pt` sha256 | `9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e` |
 
@@ -272,9 +272,8 @@ python tools/export_sam3_to_onnx.py --config <profile> --checkpoint /path/to/sam
 ```
 
 `--output-dir /path/to/models` overrides the export destination. If using that flag, configure
-the runtime to use the same directory. Export requires a CUDA device — upstream SAM3 builds two
-of its caches with a hardcoded `device="cuda"`, so a CPU model produces `Expected all tensors to
-be on the same device` on the decoder graphs. Select a GPU with `CUDA_VISIBLE_DEVICES`.
+the runtime to use the same directory. Export uses CUDA by default when available and falls back to
+CPU otherwise (or can be selected explicitly with `--device`).
 
 The exporter calls upstream backbone and grounding forwards, uses actual feature shapes and
 sequence-first text features, and copies the matching BPE vocabulary. It produces four static,
