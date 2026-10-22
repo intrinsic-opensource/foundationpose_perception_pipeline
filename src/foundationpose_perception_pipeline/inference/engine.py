@@ -60,6 +60,11 @@ class PoseEstimator:
 
     Collaborators are injected rather than constructed here so that the caller keeps control of
     model loading, which is slow and belongs to the process, not to this object.
+
+    `retain_pose_context` keeps the current object's FoundationPose context across scenes, for a
+    caller such as a long-running service that sees the same object request after request. The
+    context is still released when the object or the image size changes, or when acquisition
+    fails, so at most one object's context is ever held -- the same peak memory as the default.
     """
 
     def __init__(
@@ -75,6 +80,7 @@ class PoseEstimator:
         mark_selected_filter_results: Any,
         base_text_state_from_prompt_state: Any,
         no_refinement_policy: str,
+        retain_pose_context: bool = False,
     ) -> None:
         self.processor = processor
         self.pose_registry = pose_registry
@@ -86,6 +92,7 @@ class PoseEstimator:
         self._mark_selected = mark_selected_filter_results
         self._base_text_state = base_text_state_from_prompt_state
         self._no_refinement_policy = no_refinement_policy
+        self._retain_pose_context = retain_pose_context
         self._active_pose_image_size: tuple[int, int] | None = None
         self._active_target_obj_id: int | None = None
 
@@ -108,16 +115,20 @@ class PoseEstimator:
         if self._active_pose_image_size != depth_image_size:
             self.pose_registry.close()
             self._active_pose_image_size = depth_image_size
-        self._active_target_obj_id = None
+        if not self._retain_pose_context:
+            self._active_target_obj_id = None
         return dict(self.processor.set_image(image))
 
     def end_scene(self) -> None:
         """Release everything held for the scene just finished.
 
-        FoundationPose/TensorRT memory grows across a long run, so contexts are torn down
-        between scenes rather than kept warm. Both lifecycle fields are cleared as well: the
-        next scene must not believe a context still exists for its image size or object.
+        FoundationPose/TensorRT memory grows across a long run, so by default contexts are torn
+        down between scenes rather than kept warm. Both lifecycle fields are cleared as well: the
+        next scene must not believe a context still exists for its image size or object. With
+        `retain_pose_context` the context and both fields are deliberately kept for the next scene.
         """
+        if self._retain_pose_context:
+            return
         self.pose_registry.close()
         self._active_pose_image_size = None
         self._active_target_obj_id = None
